@@ -6,11 +6,13 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { HealthModule } from './health/health.module';
 import { MainApiModule } from './integrations/main-api/main-api.module';
 import { MessagesModule } from './messages/messages.module';
+import { join } from 'path';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: join(process.cwd(), '.env'),
     }),
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
