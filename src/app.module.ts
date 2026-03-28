@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module';
 import { MainApiModule } from './integrations/main-api/main-api.module';
 import { MessagesModule } from './messages/messages.module';
 import { join } from 'path';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { join } from 'path';
     ConversationsModule,
     MessagesModule,
     MainApiModule,
+    ChatModule,
   ],
 })
 export class AppModule {}

@@ -219,4 +219,68 @@ export class ConversationsService {
       hasMore: skip + messages.length < total,
     };
   }
+
+  async sendMessage(
+    requesterEmail: string,
+    conversationId: string,
+    content: string,
+  ) {
+    const conversation = await this.conversationModel.findById(conversationId);
+
+    if (!conversation) {
+      throw new NotFoundException('Conversación no encontrada');
+    }
+
+    const requesterIndex = conversation.participantsEmails.findIndex(
+      (email) => email === requesterEmail,
+    );
+
+    if (requesterIndex === -1) {
+      throw new ForbiddenException('No perteneces a esta conversación');
+    }
+
+    const otherIndex = requesterIndex === 0 ? 1 : 0;
+    const targetUserId = conversation.participantsUserIds[otherIndex];
+
+    const eligibility = await this.mainApiService.checkChatEligibility({
+      requesterEmail,
+      targetUserId,
+    });
+
+    if (!eligibility.allowed) {
+      conversation.blocked = true;
+      conversation.blockedReason = 'Los usuarios ya no comparten comunidad';
+      await conversation.save();
+
+      throw new BadRequestException('CHAT_BLOCKED');
+    }
+
+    const senderUser = eligibility.requesterUser;
+
+    const message = await this.messageModel.create({
+      conversationId: conversation._id,
+      senderUserId: senderUser.userId,
+      senderEmail: senderUser.email,
+      senderUsername: senderUser.username,
+      content,
+      sentAt: new Date(),
+    });
+
+    conversation.blocked = false;
+    conversation.blockedReason = null;
+    conversation.lastMessage = content;
+    conversation.lastMessageAt = message.sentAt;
+    await conversation.save();
+
+    return {
+      id: message._id.toString(),
+      conversationId: conversation._id.toString(),
+      senderUserId: message.senderUserId,
+      senderEmail: message.senderEmail,
+      senderUsername: message.senderUsername,
+      content: message.content,
+      sentAt: message.sentAt,
+      recipientEmail: conversation.participantsEmails[otherIndex],
+    };
+  }
 }
