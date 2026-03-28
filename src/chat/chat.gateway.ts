@@ -1,19 +1,24 @@
 import {
-  ConnectedSocket,
-  MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
-  SubscribeMessage,
   WebSocketGateway,
 } from '@nestjs/websockets';
-import { UsePipes, ValidationPipe } from '@nestjs/common';
-import { WebSocket } from 'ws';
+import { IncomingMessage } from 'http';
+import WebSocket, { RawData } from 'ws';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+
 import { JwtUtil } from '../auth/jwt.util';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SendMessageDto } from './dto/send-message.dto';
 
 interface AuthenticatedSocket extends WebSocket {
   userEmail?: string;
+}
+
+interface IncomingWsMessage {
+  type: string;
+  payload: SendMessageDto;
 }
 
 @WebSocketGateway({
@@ -27,25 +32,43 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly conversationsService: ConversationsService,
   ) {}
 
-  handleConnection(client: AuthenticatedSocket, request: Request) {
+  handleConnection(client: AuthenticatedSocket, request: IncomingMessage) {
     try {
-      const url = new URL(request.url || '', 'http://localhost');
-      const token = url.searchParams.get('token');
+      console.log('WS request.url:', request.url);
 
-      if (!token) {
-        client.close();
+      const url = new URL(request.url ?? '', 'http://localhost');
+      const rawToken = url.searchParams.get('token');
+
+      console.log('WS token recibido:', rawToken);
+
+      if (!rawToken) {
+        client.close(1008, 'Token no proporcionado');
         return;
       }
 
+      const token = rawToken.trim().replace(/^Bearer\s+/i, '');
       const payload = this.jwtUtil.verifyToken(token);
+
       client.userEmail = payload.sub;
 
       const userClients =
-        this.clients.get(payload.sub) || new Set<AuthenticatedSocket>();
+        this.clients.get(payload.sub) ?? new Set<AuthenticatedSocket>();
+
       userClients.add(client);
       this.clients.set(payload.sub, userClients);
-    } catch {
-      client.close();
+
+      console.log('WS autenticado:', payload.sub);
+
+      client.on('message', (data: RawData) => {
+        void this.handleRawMessage(client, data);
+      });
+
+      client.on('error', (error: Error) => {
+        console.error('WS client error:', error.message);
+      });
+    } catch (error) {
+      console.error('Error en handleConnection:', error);
+      client.close(1008, 'No autorizado');
     }
   }
 
@@ -67,12 +90,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  @SubscribeMessage('message')
-  @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
-  async handleMessage(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() body: { type: string; payload: SendMessageDto },
-  ) {
+  private async handleRawMessage(client: AuthenticatedSocket, data: RawData) {
     if (!client.userEmail) {
       client.send(
         JSON.stringify({
@@ -83,21 +101,73 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    if (body.type !== 'SEND_MESSAGE') {
-      client.send(
-        JSON.stringify({
-          type: 'ERROR',
-          payload: { message: 'Tipo de mensaje no soportado' },
-        }),
-      );
-      return;
-    }
-
     try {
+      const text =
+        typeof data === 'string'
+          ? data
+          : Buffer.isBuffer(data)
+            ? data.toString('utf8')
+            : Array.isArray(data)
+              ? Buffer.concat(data).toString('utf8')
+              : Buffer.from(data).toString('utf8');
+
+      console.log('Mensaje WS recibido:', text);
+
+      const parsed: unknown = JSON.parse(text);
+
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        !('type' in parsed) ||
+        !('payload' in parsed)
+      ) {
+        client.send(
+          JSON.stringify({
+            type: 'ERROR',
+            payload: { message: 'Estructura de mensaje inválida' },
+          }),
+        );
+        return;
+      }
+
+      const body = parsed as IncomingWsMessage;
+
+      if (body.type !== 'SEND_MESSAGE') {
+        client.send(
+          JSON.stringify({
+            type: 'ERROR',
+            payload: { message: 'Tipo de mensaje no soportado' },
+          }),
+        );
+        return;
+      }
+
+      const payloadDto = plainToInstance(SendMessageDto, body.payload);
+      const errors = await validate(payloadDto, {
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      });
+
+      if (errors.length > 0) {
+        client.send(
+          JSON.stringify({
+            type: 'ERROR',
+            payload: {
+              message: 'Payload inválido',
+              errors: errors.map((error) => ({
+                field: error.property,
+                constraints: error.constraints ?? {},
+              })),
+            },
+          }),
+        );
+        return;
+      }
+
       const result = await this.conversationsService.sendMessage(
         client.userEmail,
-        body.payload.conversationId,
-        body.payload.content,
+        payloadDto.conversationId,
+        payloadDto.content,
       );
 
       const response = {
@@ -119,7 +189,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       if (recipientSockets) {
         for (const recipientSocket of recipientSockets) {
-          recipientSocket.send(JSON.stringify(response));
+          if (
+            recipientSocket !== client &&
+            recipientSocket.readyState === WebSocket.OPEN
+          ) {
+            recipientSocket.send(JSON.stringify(response));
+          }
         }
       }
     } catch (error) {
@@ -131,7 +206,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           JSON.stringify({
             type: 'CHAT_BLOCKED',
             payload: {
-              conversationId: body.payload.conversationId,
               reason: 'Los usuarios ya no comparten comunidad',
             },
           }),
