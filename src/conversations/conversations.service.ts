@@ -110,4 +110,62 @@ export class ConversationsService {
       updatedAt: conversation.updatedAt,
     };
   }
+
+  async getUserConversations(
+    requesterEmail: string,
+  ): Promise<ConversationResponse[]> {
+    const conversations = await this.conversationModel
+      .find({ participantsEmails: requesterEmail })
+      .sort({ lastMessageAt: -1, updatedAt: -1 })
+      .exec();
+
+    const results: ConversationResponse[] = [];
+
+    for (const conversation of conversations) {
+      const requesterIndex = conversation.participantsEmails.findIndex(
+        (email) => email === requesterEmail,
+      );
+
+      if (requesterIndex === -1) {
+        continue;
+      }
+
+      const otherIndex = requesterIndex === 0 ? 1 : 0;
+
+      const targetUserId = conversation.participantsUserIds[otherIndex];
+
+      const eligibility = await this.mainApiService.checkChatEligibility({
+        requesterEmail,
+        targetUserId,
+      });
+
+      const shouldBeBlocked = !eligibility.allowed;
+
+      if (conversation.blocked !== shouldBeBlocked) {
+        conversation.blocked = shouldBeBlocked;
+        conversation.blockedReason = shouldBeBlocked
+          ? 'Los usuarios ya no comparten comunidad'
+          : null;
+
+        await conversation.save();
+      }
+
+      results.push({
+        id: conversation._id.toString(),
+        otherUser: {
+          userId: conversation.participantsUserIds[otherIndex],
+          email: conversation.participantsEmails[otherIndex],
+          username: conversation.participantsUsernames[otherIndex],
+        },
+        blocked: conversation.blocked,
+        blockedReason: conversation.blockedReason,
+        lastMessage: conversation.lastMessage,
+        lastMessageAt: conversation.lastMessageAt,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      });
+    }
+
+    return results;
+  }
 }
