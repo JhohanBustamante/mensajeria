@@ -4,6 +4,8 @@ import { CurrentUserEmail } from '../common/decorators/current-user-email.decora
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { ConversationsService } from './conversations.service';
 import { Get } from '@nestjs/common';
+import { Param, Query } from '@nestjs/common';
+import { GetConversationMessagesDto } from '../messages/dto/get-conversation-messages.dto';
 
 @Controller('chat/conversations')
 export class ConversationsController {
@@ -24,5 +26,20 @@ export class ConversationsController {
   @UseGuards(JwtAuthGuard)
   async getConversations(@CurrentUserEmail() requesterEmail: string) {
     return this.conversationsService.getUserConversations(requesterEmail);
+  }
+
+  @Get(':conversationId/messages')
+  @UseGuards(JwtAuthGuard)
+  async getConversationMessages(
+    @CurrentUserEmail() requesterEmail: string,
+    @Param('conversationId') conversationId: string,
+    @Query() query: GetConversationMessagesDto,
+  ) {
+    return this.conversationsService.getConversationMessages(
+      requesterEmail,
+      conversationId,
+      query.page,
+      query.limit,
+    );
   }
 }

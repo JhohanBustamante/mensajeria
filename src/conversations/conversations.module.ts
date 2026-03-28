@@ -8,11 +8,13 @@ import {
   Conversation,
   ConversationSchema,
 } from './schemas/conversation.schema';
+import { Message, MessageSchema } from '../messages/schemas/message.schema';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: Conversation.name, schema: ConversationSchema },
+      { name: Message.name, schema: MessageSchema },
     ]),
     MainApiModule,
     AuthModule,

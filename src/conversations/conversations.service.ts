@@ -11,12 +11,16 @@ import {
   ConversationDocument,
 } from './schemas/conversation.schema';
 import { ConversationResponse } from './interfaces/conversation-response.interface';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Message, MessageDocument } from '../messages/schemas/message.schema';
 
 @Injectable()
 export class ConversationsService {
   constructor(
     @InjectModel(Conversation.name)
     private readonly conversationModel: Model<ConversationDocument>,
+    @InjectModel(Message.name)
+    private readonly messageModel: Model<MessageDocument>,
     private readonly mainApiService: MainApiService,
   ) {}
 
@@ -131,7 +135,6 @@ export class ConversationsService {
       }
 
       const otherIndex = requesterIndex === 0 ? 1 : 0;
-
       const targetUserId = conversation.participantsUserIds[otherIndex];
 
       const eligibility = await this.mainApiService.checkChatEligibility({
@@ -167,5 +170,53 @@ export class ConversationsService {
     }
 
     return results;
+  }
+
+  async getConversationMessages(
+    requesterEmail: string,
+    conversationId: string,
+    page: number,
+    limit: number,
+  ) {
+    const conversation = await this.conversationModel.findById(conversationId);
+
+    if (!conversation) {
+      throw new NotFoundException('Conversación no encontrada');
+    }
+
+    const isParticipant =
+      conversation.participantsEmails.includes(requesterEmail);
+
+    if (!isParticipant) {
+      throw new ForbiddenException('No perteneces a esta conversación');
+    }
+
+    const skip = (page - 1) * limit;
+
+    const messages = await this.messageModel
+      .find({ conversationId: conversation._id })
+      .sort({ sentAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .exec();
+
+    const total = await this.messageModel.countDocuments({
+      conversationId: conversation._id,
+    });
+
+    return {
+      items: messages.map((message) => ({
+        id: message._id.toString(),
+        conversationId: message.conversationId.toString(),
+        senderUserId: message.senderUserId,
+        senderEmail: message.senderEmail,
+        senderUsername: message.senderUsername,
+        content: message.content,
+        sentAt: message.sentAt,
+      })),
+      page,
+      limit,
+      hasMore: skip + messages.length < total,
+    };
   }
 }
